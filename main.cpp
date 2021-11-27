@@ -1,13 +1,40 @@
 #include <jwt-cpp/jwt.h>
 #include <httplib.h>
 #include <string>
-#include <iostream>
+#include <exception>
+#include <filesystem>
+
+std::string getTokenFromCookies(std::string cookies) {
+    size_t pos{};
+    size_t index{};
+    std::string cookie;
+    std::string delim{"; "};
+
+    while (true) {
+        pos = cookies.find(delim);
+
+        if (pos == std::string::npos) {
+            index = cookies.length();
+        } else {
+            index = pos;
+        }
+        cookie = cookies.substr(0, index);
+        if (cookie.find("token=") == 0) {
+            return cookies.substr(6);
+        }
+        if (pos == std::string::npos) {
+            return "";
+        }
+        cookies.erase(0, pos + delim.length());
+    }
+}
 
 
-int main(void) {
+int main() {
     using namespace httplib;
 
     Server svr;
+
     const std::string pubKey = "-----BEGIN PUBLIC KEY-----\n"
                                "MFswDQYJKoZIhvcNAQEBBQADSgAwRwJAc+95gTomCPtOtnF2pZA/P31O9Jij6nbr\n"
                                "1ndI7hHsep/cBcxJWyle0vepFi5qdrnMYnMN+18eayuhMOjTZAgcuQIDAQAB\n"
@@ -24,43 +51,59 @@ int main(void) {
                                "-----END RSA PRIVATE KEY-----";
 
     svr.Get(R"(/auth/([^/]+))", [&](const Request &req, Response &res) {
+        std::string username = req.path.substr(req.path.find("/auth/") + 6, req.path.size());
         auto token = jwt::create()
                 .set_issuer("auth0")
+                .set_type("JWT")
                 .set_issued_at(std::chrono::system_clock::now())
                 .set_expires_at(std::chrono::system_clock::now() + std::chrono::seconds{86400}) //86400s -> 24h
-                .sign(jwt::algorithm::rs256{pubKey, priKey});
+                .set_subject(username)
+                .sign(jwt::algorithm::rs256{"", priKey, "", ""});
 
         res.set_header("Set-Cookie", "token=" + token + "; HttpOnly; Path=/");
-        res.set_content(token, "text/plain");
+        res.set_content(pubKey, "text/plain");
     });
 
     svr.Get("/verify", [&](const Request &req, Response &res) {
-        try {
-            std::string token = "eyJhbGciOiJSUzI1NiJ9.eyJleHAiOjE2MzgwNTUyMTYsImlhdCI6MTYznzk2ODgxNiwiaXNzIjoiYXV0aDAifQ.NHfxsZwDJMVfIDbCm88RIOE13o5EMjCqOdfW3BhfDup40H0xoZejgiBD_4RMPHj4XYX4SQJ8BHqcSFttcLb-BQ";
-            auto decoded = jwt::decode(token);
-            for (auto &e: decoded.get_payload_claims())
-                std::cout << e.first << " = " << e.second << std::endl;
 
-            auto verifier = jwt::verify()
-                    .allow_algorithm(jwt::algorithm::rs256{pubKey, priKey})
-                    .with_issuer("auth0");
-            verifier.verify(decoded);
-        } catch (const std::exception &e) {
-            res.set_content("invalid", "text/plain");
+        if (!req.has_header("Cookie")) {
+            res.status = 400;
+            res.set_content("No token sent with cookies", "text/plain");
+            return;
         }
-        res.set_content("valid", "text/plain");
+
+        std::string token{getTokenFromCookies(req.get_header_value("Cookie"))};
+
+        if (token.empty()) {
+            res.status = 400;
+            res.set_content("No token sent with cookies", "text/plain");
+            return;
+        }
+        try {
+            auto verifier = jwt::verify()
+                    .allow_algorithm(jwt::algorithm::rs256{pubKey, "", "", ""})
+                    .with_issuer("auth0");
+            auto decoded = jwt::decode(token);
+            verifier.verify(decoded);
+            std::string username = decoded.get_payload_claim("sub").as_string();
+            res.set_content(username, "text/plain");
+        } catch (const std::exception &e) {
+            res.status = 400;
+            res.set_content("JWT token was not valid", "text/plain");
+            return;
+        }
     });
 
-    svr.Get("/README.txt", [](const Request &req, Response &res) {
-        res.set_content("readMe", "text/plain");
+    svr.Get("/stats", [](const Request &req, Response &res) {
+        res.set_content("Not Yet Implemented", "text/plain");
     });
+
+    svr.set_mount_point("/", "../static");
+    svr.set_file_extension_and_mimetype_mapping("txt", "text/plain");
 
     svr.set_exception_handler([](const auto &req, auto &res, std::exception &e) {
         res.status = 500;
-        auto fmt = "<h1>Error 500</h1><p>%s</p>";
-        char buf[256];
-        snprintf(buf, sizeof(buf), fmt, e.what());
-        res.set_content(buf, "text/html");
+        res.set_content("Internal Error", "text/plain");
     });
 
     svr.listen("localhost", 8080);

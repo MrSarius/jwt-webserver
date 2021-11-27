@@ -1,3 +1,9 @@
-# JWT Webserver
+# JWT Webserver Sample Project
 
-This Server simply serves JWT tokens as HTTP only cookie on '/auth/<username>'. Those can be verified on '/verify'
+This Server issues JWT tokens as HTTP only cookie at '/auth/&lt;username&gt;'. Those can be verified at '/verify'
+
+## Get started
+Install Openssl:
+```
+sudo apt install libssl-dev
+```
